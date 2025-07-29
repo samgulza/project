@@ -1,0 +1,720 @@
+---
+title: "covid-19"
+author: "Jeonguk.lee"
+date: "2025-07-29"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cosmo
+    highlight: tango
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6
+)
+```
+
+# COVID-19 Data Analysis
+
+This document presents an analysis of COVID-19 data from Johns Hopkins University.
+**Note**: This data was last updated on March 10, 2023.
+
+## Library Loading
+
+```{r libraries}
+# Install and load required packages
+packages <- c("readr", "dplyr", "ggplot2", "plotly", "DT", 
+              "tidyr", "lubridate", "scales", "viridis", "zoo")
+
+# Check and install missing packages
+new_packages <- packages[!(packages %in% installed.packages()[,"Package"])]
+if(length(new_packages)) install.packages(new_packages)
+
+# Load libraries
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(plotly)
+library(DT)
+library(tidyr)
+library(lubridate)
+library(scales)
+library(viridis)
+library(zoo)
+```
+
+## Data Loading
+
+```{r data_loading}
+# Correct raw GitHub URLs
+urls <- c(
+  us_confirmed = "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv",
+  global_confirmed = "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv",
+  us_deaths = "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_US.csv",
+  global_deaths = "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_global.csv"
+)
+
+# Load data
+cat("Loading data...\n")
+
+global_confirmed <- read_csv(urls["global_confirmed"])
+global_deaths <- read_csv(urls["global_deaths"])
+us_confirmed <- read_csv(urls["us_confirmed"])
+us_deaths <- read_csv(urls["us_deaths"])
+
+cat("Data loading completed!\n")
+```
+
+## Data Structure Overview
+
+```{r data_structure}
+# Global confirmed cases data structure
+cat("Global confirmed cases data structure:\n")
+str(global_confirmed)
+
+cat("\nFirst 5 columns and 3 rows:\n")
+global_confirmed[1:3, 1:5] %>% 
+  DT::datatable(options = list(scrollX = TRUE))
+```
+
+## Data Preprocessing
+
+```{r data_preprocessing}
+# Convert global confirmed cases data to long format
+global_confirmed_long <- global_confirmed %>%
+  pivot_longer(
+    cols = -c(`Province/State`, `Country/Region`, Lat, Long),
+    names_to = "date",
+    values_to = "confirmed"
+  ) %>%
+  mutate(
+    date = mdy(date),
+    `Province/State` = replace_na(`Province/State`, "")
+  ) %>%
+  rename(
+    province_state = `Province/State`,
+    country_region = `Country/Region`
+  )
+
+# Convert global deaths data to long format
+global_deaths_long <- global_deaths %>%
+  pivot_longer(
+    cols = -c(`Province/State`, `Country/Region`, Lat, Long),
+    names_to = "date",
+    values_to = "deaths"
+  ) %>%
+  mutate(
+    date = mdy(date),
+    `Province/State` = replace_na(`Province/State`, "")
+  ) %>%
+  rename(
+    province_state = `Province/State`,
+    country_region = `Country/Region`
+  )
+
+# Continental classification function
+classify_continent <- function(country) {
+  case_when(
+    country %in% c("China", "Japan", "Korea, South", "Singapore", "Thailand", 
+                   "Malaysia", "Philippines", "Vietnam", "Indonesia", "India", 
+                   "Pakistan", "Bangladesh", "Sri Lanka", "Myanmar", "Cambodia",
+                   "Laos", "Mongolia", "Nepal", "Bhutan", "Brunei", "Taiwan*",
+                   "Afghanistan", "Kazakhstan", "Kyrgyzstan", "Tajikistan", 
+                   "Turkmenistan", "Uzbekistan") ~ "Asia",
+    
+    country %in% c("Italy", "Spain", "Germany", "France", "United Kingdom",
+                   "Netherlands", "Belgium", "Austria", "Switzerland", "Portugal",
+                   "Sweden", "Norway", "Denmark", "Finland", "Poland", "Romania",
+                   "Czech Republic", "Hungary", "Bulgaria", "Greece", "Croatia",
+                   "Slovenia", "Slovakia", "Lithuania", "Latvia", "Estonia",
+                   "Ireland", "Luxembourg", "Malta", "Cyprus", "Iceland",
+                   "Russia", "Ukraine", "Belarus", "Moldova", "Serbia", "Bosnia and Herzegovina",
+                   "Montenegro", "North Macedonia", "Albania", "Kosovo") ~ "Europe",
+    
+    country %in% c("US", "Canada", "Mexico", "Guatemala", "Belize", "El Salvador",
+                   "Honduras", "Nicaragua", "Costa Rica", "Panama", "Cuba",
+                   "Jamaica", "Haiti", "Dominican Republic", "Trinidad and Tobago",
+                   "Barbados", "Bahamas", "Antigua and Barbuda", "Saint Lucia",
+                   "Grenada", "Saint Vincent and the Grenadines", "Dominica",
+                   "Saint Kitts and Nevis") ~ "North America",
+    
+    country %in% c("Brazil", "Argentina", "Chile", "Peru", "Colombia", "Venezuela",
+                   "Ecuador", "Bolivia", "Uruguay", "Paraguay", "Guyana", 
+                   "Suriname", "French Guiana") ~ "South America",
+    
+    country %in% c("Egypt", "South Africa", "Morocco", "Algeria", "Tunisia",
+                   "Libya", "Sudan", "Ethiopia", "Kenya", "Uganda", "Tanzania",
+                   "Rwanda", "Burundi", "Madagascar", "Mauritius", "Seychelles",
+                   "Comoros", "Nigeria", "Ghana", "Senegal", "Mali", "Burkina Faso",
+                   "Niger", "Chad", "Cameroon", "Central African Republic",
+                   "Equatorial Guinea", "Gabon", "Congo (Brazzaville)", "Congo (Kinshasa)",
+                   "Angola", "Zambia", "Zimbabwe", "Botswana", "Namibia", "Lesotho",
+                   "Eswatini", "Malawi", "Mozambique", "Somalia", "Djibouti", "Eritrea") ~ "Africa",
+    
+    country %in% c("Australia", "New Zealand", "Papua New Guinea", "Fiji",
+                   "Solomon Islands", "Vanuatu", "Samoa", "Tonga", "Kiribati",
+                   "Tuvalu", "Nauru", "Palau", "Marshall Islands", "Micronesia") ~ "Oceania",
+    
+    TRUE ~ "Others"
+  )
+}
+
+# Combine confirmed and deaths data with continental information
+global_combined <- global_confirmed_long %>%
+  left_join(
+    global_deaths_long %>% select(province_state, country_region, date, deaths),
+    by = c("province_state", "country_region", "date")
+  ) %>%
+  filter(!is.na(date)) %>%
+  mutate(continent = classify_continent(country_region))
+
+cat("Preprocessing completed! Total", nrow(global_combined), "records\n")
+cat("Data period:", min(global_combined$date), "to", max(global_combined$date), "\n")
+cat("Continental classifications:", unique(global_combined$continent), "\n")
+```
+
+## Global Overview
+
+```{r global_summary}
+# Daily global cumulative statistics
+world_daily <- global_combined %>%
+  group_by(date) %>%
+  summarise(
+    total_confirmed = sum(confirmed, na.rm = TRUE),
+    total_deaths = sum(deaths, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    daily_new_cases = total_confirmed - lag(total_confirmed, default = 0),
+    daily_new_deaths = total_deaths - lag(total_deaths, default = 0),
+    case_fatality_rate = round(total_deaths / total_confirmed * 100, 2)
+  )
+
+# Latest statistics
+latest_stats <- world_daily %>% 
+  slice_tail(n = 1)
+
+cat("=== Global Final Statistics (", as.character(latest_stats$date), ") ===\n")
+cat("Total Confirmed Cases:", format(latest_stats$total_confirmed, big.mark = ","), "\n")
+cat("Total Deaths:", format(latest_stats$total_deaths, big.mark = ","), "\n")
+cat("Case Fatality Rate:", latest_stats$case_fatality_rate, "%\n")
+```
+
+## Visualizations
+
+### 1. Global Cumulative Cases and Deaths Trends
+
+```{r global_trends}
+p1 <- world_daily %>%
+  select(date, total_confirmed, total_deaths) %>%
+  pivot_longer(cols = c(total_confirmed, total_deaths), 
+               names_to = "type", values_to = "count") %>%
+  mutate(
+    type = case_when(
+      type == "total_confirmed" ~ "Confirmed Cases",
+      type == "total_deaths" ~ "Deaths"
+    )
+  ) %>%
+  ggplot(aes(x = date, y = count, color = type)) +
+  geom_line(size = 1) +
+  scale_y_continuous(labels = comma_format()) +
+  scale_color_manual(values = c("Confirmed Cases" = "#E31A1C", "Deaths" = "#1F78B4")) +
+  labs(
+    title = "Global COVID-19 Cumulative Cases and Deaths Trends",
+    subtitle = paste("Data period:", min(world_daily$date), "to", max(world_daily$date)),
+    x = "Date",
+    y = "Cumulative Count",
+    color = "Type"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 10),
+    legend.position = "bottom"
+  )
+
+ggplotly(p1)
+```
+
+### 2. Daily New Cases Trends
+
+```{r daily_new_cases}
+p2 <- world_daily %>%
+  filter(date >= as.Date("2020-03-01")) %>%  # Start from March
+  ggplot(aes(x = date, y = daily_new_cases)) +
+  geom_col(fill = "#FF6B6B", alpha = 0.7) +
+  geom_smooth(method = "loess", se = FALSE, color = "#4ECDC4", size = 1) +
+  scale_y_continuous(labels = comma_format()) +
+  labs(
+    title = "Global Daily New COVID-19 Cases Trends",
+    subtitle = "Smooth curve represents trend line",
+    x = "Date",
+    y = "Daily New Cases"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold")
+  )
+
+ggplotly(p2)
+```
+
+### 3. Major Countries Comparison
+
+```{r country_comparison}
+# Top 10 countries by confirmed cases
+top_countries <- global_combined %>%
+  filter(date == max(date)) %>%
+  group_by(country_region) %>%
+  summarise(total_confirmed = sum(confirmed, na.rm = TRUE), .groups = 'drop') %>%
+  arrange(desc(total_confirmed)) %>%
+  slice_head(n = 10) %>%
+  pull(country_region)
+
+# Trends for top 10 countries
+country_trends <- global_combined %>%
+  filter(country_region %in% top_countries) %>%
+  group_by(country_region, date) %>%
+  summarise(
+    confirmed = sum(confirmed, na.rm = TRUE),
+    deaths = sum(deaths, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+p3 <- country_trends %>%
+  ggplot(aes(x = date, y = confirmed, color = country_region)) +
+  geom_line(size = 1) +
+  scale_y_log10(labels = comma_format()) +
+  scale_color_viridis_d(name = "Country") +
+  labs(
+    title = "COVID-19 Cases Trends by Major Countries (Log Scale)",
+    subtitle = "Top 10 countries by confirmed cases",
+    x = "Date",
+    y = "Cumulative Confirmed Cases (Log Scale)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  guides(color = guide_legend(nrow = 2))
+
+ggplotly(p3)
+```
+
+### 4. Country-wise Final Statistics Table
+
+```{r country_table}
+final_country_stats <- global_combined %>%
+  filter(date == max(date)) %>%
+  group_by(country_region) %>%
+  summarise(
+    confirmed_cases = sum(confirmed, na.rm = TRUE),
+    deaths = sum(deaths, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    fatality_rate = round(deaths / confirmed_cases * 100, 2)
+  ) %>%
+  arrange(desc(confirmed_cases)) %>%
+  rename(country = country_region)
+
+# Display top 20 countries
+final_country_stats %>%
+  slice_head(n = 20) %>%
+  DT::datatable(
+    caption = "COVID-19 Final Statistics by Country (Top 20)",
+    options = list(
+      pageLength = 10,
+      scrollX = TRUE
+    )
+  ) %>%
+  DT::formatCurrency(c("confirmed_cases", "deaths"), currency = "", interval = 3, mark = ",", digits = 0) %>%
+  DT::formatRound("fatality_rate", digits = 2)
+```
+
+## South Korea Detailed Analysis
+
+```{r korea_analysis}
+# Extract South Korea data
+korea_data <- global_combined %>%
+  filter(country_region == "Korea, South") %>%
+  group_by(date) %>%
+  summarise(
+    confirmed = sum(confirmed, na.rm = TRUE),
+    deaths = sum(deaths, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    daily_new_cases = confirmed - lag(confirmed, default = 0),
+    daily_new_deaths = deaths - lag(deaths, default = 0)
+  )
+
+# South Korea statistics
+korea_latest <- korea_data %>% slice_tail(n = 1)
+
+cat("=== South Korea Final Statistics ===\n")
+cat("Total Confirmed Cases:", format(korea_latest$confirmed, big.mark = ","), "\n")
+cat("Total Deaths:", format(korea_latest$deaths, big.mark = ","), "\n")
+cat("Case Fatality Rate:", round(korea_latest$deaths / korea_latest$confirmed * 100, 2), "%\n")
+
+# South Korea daily new cases chart
+p4 <- korea_data %>%
+  filter(date >= as.Date("2020-02-15")) %>%
+  ggplot(aes(x = date, y = daily_new_cases)) +
+  geom_col(fill = "#FF9999", alpha = 0.7) +
+  geom_smooth(method = "loess", se = FALSE, color = "#0066CC", size = 1) +
+  scale_y_continuous(labels = comma_format()) +
+  labs(
+    title = "South Korea Daily New COVID-19 Cases",
+    subtitle = "From February 15, 2020",
+    x = "Date",
+    y = "Daily New Cases"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold")
+  )
+
+ggplotly(p4)
+```
+
+## Continental Comparison Analysis
+
+```{r continent_analysis}
+# Daily cumulative statistics by continent
+continent_daily <- global_combined %>%
+  group_by(continent, date) %>%
+  summarise(
+    confirmed = sum(confirmed, na.rm = TRUE),
+    deaths = sum(deaths, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  filter(continent != "Others")  # Exclude others
+
+# Final statistics by continent
+continent_final <- continent_daily %>%
+  group_by(continent) %>%
+  slice_tail(n = 1) %>%
+  arrange(desc(confirmed)) %>%
+  mutate(
+    fatality_rate = round(deaths / confirmed * 100, 2)
+  )
+
+cat("=== Final Statistics by Continent ===\n")
+for(i in 1:nrow(continent_final)) {
+  cat(continent_final$continent[i], ": Confirmed", 
+      format(continent_final$confirmed[i], big.mark = ","), ", Deaths",
+      format(continent_final$deaths[i], big.mark = ","), ", Fatality Rate",
+      continent_final$fatality_rate[i], "%\n")
+}
+```
+
+### Continental Confirmed Cases Trends
+
+```{r continent_confirmed_trends}
+p5 <- continent_daily %>%
+  ggplot(aes(x = date, y = confirmed, color = continent)) +
+  geom_line(size = 1.2) +
+  scale_y_continuous(labels = comma_format()) +
+  scale_color_viridis_d(name = "Continent") +
+  labs(
+    title = "COVID-19 Cumulative Cases Trends by Continent",
+    subtitle = "January 2020 to March 2023",
+    x = "Date",
+    y = "Cumulative Confirmed Cases"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    legend.position = "bottom"
+  )
+
+ggplotly(p5)
+```
+
+### Continental Fatality Rate Comparison
+
+```{r continent_fatality_rate}
+p6 <- continent_final %>%
+  ggplot(aes(x = reorder(continent, confirmed), y = fatality_rate, fill = continent)) +
+  geom_col(alpha = 0.8) +
+  geom_text(aes(label = paste0(fatality_rate, "%")), 
+            hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  scale_fill_viridis_d(guide = "none") +
+  labs(
+    title = "COVID-19 Fatality Rate Comparison by Continent",
+    subtitle = "Based on final cumulative data",
+    x = "Continent",
+    y = "Fatality Rate (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold")
+  )
+
+ggplotly(p6)
+```
+
+## Cases-Deaths Gap Analysis
+
+```{r gap_analysis}
+# Global case fatality rate changes over time
+world_cfr_trends <- world_daily %>%
+  filter(total_confirmed >= 1000) %>%  # Analyze from 1000+ cases
+  mutate(
+    cfr_7day = zoo::rollmean(case_fatality_rate, k=7, fill=NA, align="right"),
+    confirmed_growth_rate = (total_confirmed / lag(total_confirmed, 7) - 1) * 100,
+    deaths_growth_rate = (total_deaths / lag(total_deaths, 7) - 1) * 100
+  )
+
+# Case fatality rate trends
+p7 <- world_cfr_trends %>%
+  ggplot(aes(x = date)) +
+  geom_line(aes(y = case_fatality_rate), color = "#FF6B6B", alpha = 0.3) +
+  geom_line(aes(y = cfr_7day), color = "#E31A1C", size = 1.2) +
+  scale_y_continuous(
+    labels = function(x) paste0(x, "%"),
+    limits = c(0, max(world_cfr_trends$case_fatality_rate, na.rm = TRUE) * 1.1)
+  ) +
+  labs(
+    title = "Global COVID-19 Case Fatality Rate Trends",
+    subtitle = "Red line: 7-day moving average, Light line: Daily fatality rate",
+    x = "Date",
+    y = "Case Fatality Rate (%)",
+    caption = "Analysis starts from 1,000+ confirmed cases"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold")
+  )
+
+ggplotly(p7)
+```
+
+### Cases vs Deaths Ratio Over Time
+
+```{r ratio_analysis}
+# Comparison of relative growth rates for cases and deaths
+p8 <- world_cfr_trends %>%
+  filter(!is.na(confirmed_growth_rate), !is.na(deaths_growth_rate)) %>%
+  select(date, confirmed_growth_rate, deaths_growth_rate) %>%
+  pivot_longer(cols = c(confirmed_growth_rate, deaths_growth_rate),
+               names_to = "type", values_to = "growth_rate") %>%
+  mutate(
+    type = case_when(
+      type == "confirmed_growth_rate" ~ "Cases Growth Rate",
+      type == "deaths_growth_rate" ~ "Deaths Growth Rate"
+    )
+  ) %>%
+  ggplot(aes(x = date, y = growth_rate, color = type)) +
+  geom_line(size = 1) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  scale_color_manual(values = c("Cases Growth Rate" = "#4ECDC4", "Deaths Growth Rate" = "#FF9999")) +
+  labs(
+    title = "Cases vs Deaths Weekly Growth Rate Comparison",
+    subtitle = "Positive: increase, Negative: decrease (7-day basis)",
+    x = "Date",
+    y = "Weekly Growth Rate (%)",
+    color = "Type"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    legend.position = "bottom"
+  )
+
+ggplotly(p8)
+```
+
+### Cases-Deaths Gap Visualization
+
+```{r gap_visualization}
+# Gap between cumulative cases and deaths
+p9 <- world_daily %>%
+  mutate(gap = total_confirmed - total_deaths) %>%
+  ggplot(aes(x = date)) +
+  geom_area(aes(y = total_confirmed), fill = "#FFE5E5", alpha = 0.7) +
+  geom_area(aes(y = total_deaths), fill = "#FF6B6B", alpha = 0.8) +
+  geom_line(aes(y = gap), color = "#0066CC", size = 1.2) +
+  scale_y_continuous(labels = comma_format()) +
+  labs(
+    title = "Global COVID-19 Cases-Deaths Gap Evolution",
+    subtitle = "Red area: Cumulative deaths, Pink area: Cumulative cases, Blue line: Gap",
+    x = "Date",
+    y = "Cumulative Count",
+    caption = "Widening gap indicates improving survival rates"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold")
+  )
+
+ggplotly(p9)
+```
+
+### Detailed Case Fatality Rate Analysis by Period
+
+```{r detailed_cfr_analysis}
+# Case fatality rate analysis by major periods
+cfr_periods <- world_cfr_trends %>%
+  mutate(
+    period = case_when(
+      date < as.Date("2020-06-01") ~ "Early Phase (Jan-May 2020)",
+      date < as.Date("2020-12-01") ~ "First Wave (Jun-Nov 2020)",
+      date < as.Date("2021-06-01") ~ "Vaccine Introduction (Dec 2020-May 2021)",
+      date < as.Date("2021-12-01") ~ "Delta Variant (Jun-Nov 2021)",
+      date < as.Date("2022-06-01") ~ "Omicron Variant (Dec 2021-May 2022)",
+      TRUE ~ "Endemic Transition (Jun 2022 onwards)"
+    )
+  ) %>%
+  filter(!is.na(cfr_7day))
+
+# Average fatality rate by period
+period_summary <- cfr_periods %>%
+  group_by(period) %>%
+  summarise(
+    avg_cfr = mean(cfr_7day, na.rm = TRUE),
+    min_cfr = min(cfr_7day, na.rm = TRUE),
+    max_cfr = max(cfr_7day, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  arrange(avg_cfr)
+
+# Box plot of fatality rates by period
+p10 <- cfr_periods %>%
+  ggplot(aes(x = reorder(period, -cfr_7day, FUN = median), y = cfr_7day, fill = period)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_point(alpha = 0.3, position = position_jitter(width = 0.2)) +
+  coord_flip() +
+  scale_fill_viridis_d(guide = "none") +
+  labs(
+    title = "COVID-19 Case Fatality Rate Distribution by Period",
+    subtitle = "Distribution of 7-day moving average fatality rates for each period",
+    x = "Period",
+    y = "Case Fatality Rate (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold")
+  )
+
+ggplotly(p10)
+
+# Period statistics table
+period_summary %>%
+  mutate(
+    average_cfr = round(avg_cfr, 2),
+    minimum_cfr = round(min_cfr, 2),
+    maximum_cfr = round(max_cfr, 2)
+  ) %>%
+  select(Period = period, average_cfr, minimum_cfr, maximum_cfr) %>%
+  DT::datatable(
+    caption = "Case Fatality Rate Statistics by Period",
+    options = list(
+      pageLength = 10
+    )
+  )
+```
+
+## Key Findings Summary
+
+```{r key_findings}
+# Calculate key statistics
+max_daily_cases <- max(world_daily$daily_new_cases, na.rm = TRUE)
+max_daily_cases_date <- world_daily$date[which.max(world_daily$daily_new_cases)]
+
+initial_cfr <- world_cfr_trends$case_fatality_rate[1]
+final_cfr <- tail(world_cfr_trends$case_fatality_rate, 1)
+cfr_improvement <- round((initial_cfr - final_cfr), 2)
+
+# Continental ranking
+continent_ranking <- continent_final %>%
+  arrange(desc(confirmed)) %>%
+  pull(continent)
+
+cat("=== Key Findings ===\n\n")
+cat("📊 **Global Peak Daily New Cases**\n")
+cat("   ", format(max_daily_cases, big.mark = ","), "cases on", as.character(max_daily_cases_date), "\n\n")
+
+cat("📈 **Case Fatality Rate Evolution**\n")
+cat("   Initial CFR:", round(initial_cfr, 2), "% → Final CFR:", round(final_cfr, 2), "%\n")
+cat("   Improvement:", cfr_improvement, "percentage points\n\n")
+
+cat("🌍 **Continental Ranking by Cases**\n")
+for(i in 1:length(continent_ranking)) {
+  cases <- continent_final$confirmed[continent_final$continent == continent_ranking[i]]
+  cat("   ", i, ".", continent_ranking[i], "-", format(cases, big.mark = ","), "cases\n")
+}
+```
+
+### 💡 Analysis Interpretation
+
+**1. Dramatic Improvement in Case Fatality Rate**
+- From initial `r round(initial_cfr, 1)`% to final `r round(final_cfr, 1)`%, an improvement of `r cfr_improvement` percentage points
+- This reflects the combined effect of medical experience accumulation, treatment development, and vaccine introduction
+
+**2. Continuous Widening of Cases-Deaths Gap**
+- Over time, while cases increased, the death rate increase was relatively slower
+- The gap expanded rapidly especially after vaccination began in 2021
+
+**3. Continental Characteristics Differences**
+- Asia: Relatively low fatality rate compared to population → Effect of mask culture and early response
+- Europe: High cases and fatality rates → Impact of delayed initial response and population density
+- North America: High absolute numbers due to US influence
+
+**4. Distinct Patterns by Period**
+- **Early (2020)**: High fatality rate, healthcare system burden
+- **Middle (2021)**: Rapid decrease in fatality rate due to vaccine introduction
+- **Late (2022~)**: Many cases but relatively low fatality rate due to Omicron variant
+
+---
+
+*📈 This analysis provides an important record of how the COVID-19 pandemic evolved and how humanity adapted to it.*
+
+## Conclusions
+
+This analysis reveals several key insights about the COVID-19 pandemic:
+
+### Global Overview
+- **Total Scale**: `r format(latest_stats$total_confirmed, big.mark = ",")` confirmed cases and `r format(latest_stats$total_deaths, big.mark = ",")` deaths occurred
+- **Final Case Fatality Rate**: Global average fatality rate was approximately `r latest_stats$case_fatality_rate`%
+
+### Continental Characteristics
+- **Asia**: High absolute case numbers but relatively low fatality rates
+- **Europe**: High case numbers and relatively high fatality rates
+- **North America**: High case numbers due to US influence
+- **South America, Africa**: Recorded relatively high fatality rates
+
+### Temporal Evolution Patterns
+1. **Initial High Fatality**: Early pandemic (first half of 2020) had fatality rates above 5%
+2. **Gradual Improvement**: Continuous decrease in fatality rates due to treatment development and healthcare system adaptation
+3. **Vaccine Effect**: Rapid decrease in fatality rates after vaccine introduction in 2021
+4. **Variant Impact**: Temporary increase during Delta variant period, sharp decrease during Omicron period
+
+### Widening Cases-Deaths Gap
+- **Continuous Gap Expansion**: Over time, the ratio of deaths to cases decreased
+- **Medical Advancement**: Result of improved treatments, vaccination, and accumulated medical experience
+- **Variant Characteristics**: Impact of variants with relatively lower fatality rates like Omicron
+
+### South Korea's Characteristics
+- Total of `r format(korea_latest$confirmed, big.mark = ",")` confirmed cases
+- Demonstrated effective quarantine policies with relatively low fatality rates
+- Proved initial response and healthcare system efficiency
+
+### Data Limitations
+- This data is only updated until March 10, 2023, requiring other sources for latest trends
+- Potential data bias due to differences in testing policies and reporting standards by country
+
+---
+
+*Data Source: Johns Hopkins University Center for Systems Science and Engineering (JHU CSSE)*  
+*Analysis Date: `r Sys.time()`*

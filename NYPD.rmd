@@ -1,0 +1,405 @@
+---
+title: "NYPD shooting incident data report"
+author: "Jeonguk.lee"
+date: "2025-07-27"
+output:
+  html_document:
+    toc: true
+    df_print: paged
+  pdf_document:
+    toc: true
+    number_sections: true
+    fig_caption: true
+    keep_tex: false
+geometry: margin=1in
+fontsize: 11pt
+---
+
+# Introduction
+
+## Background and Data Source
+
+This analysis examines shooting incident data from the New York Police Department (NYPD), sourced from NYC Open Data. The dataset contains detailed records of every shooting incident in New York City from 2006 to present, providing a comprehensive view of gun violence patterns across the city's five boroughs.
+
+The NYPD Shooting Incident Data includes information about:
+- **Temporal factors**: Date, time of occurrence
+- **Geographic factors**: Borough, precinct, coordinates
+- **Incident characteristics**: Whether the incident resulted in murder
+- **Victim demographics**: Age group, sex, race/ethnicity
+- **Perpetrator demographics**: Age group, sex, race/ethnicity (when available)
+
+## Research Objectives
+
+This analysis aims to:
+
+1. **Identify temporal and spatial patterns** in shooting incidents to understand when and where these events are most likely to occur
+2. **Examine demographic disparities** in victimization patterns across different communities
+3. **Develop a predictive model** to understand factors associated with fatal shooting outcomes
+4. **Critically assess biases** inherent in police data and their implications for analysis and policy
+
+Understanding these patterns is crucial for developing evidence-based public safety strategies, resource allocation, and community intervention programs. However, we must approach this analysis with awareness of the systemic biases embedded in police data and the ethical implications of predictive policing.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Data Overview and Preprocessing
+
+```{r load-packages}
+# Install and load required packages
+if (!require("tidyverse")) install.packages("tidyverse")
+if (!require("lubridate")) install.packages("lubridate")
+if (!require("ggplot2")) install.packages("ggplot2")
+if (!require("plotly")) install.packages("plotly")
+if (!require("DT")) install.packages("DT")
+
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(plotly)
+library(DT)
+```
+
+```{r load-data}
+# Data URL
+data_url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+
+# Read data
+nypd_data <- read_csv(data_url)
+
+# Check data structure
+cat("Data size:", nrow(nypd_data), "rows,", ncol(nypd_data), "columns\n")
+head(nypd_data)
+```
+
+## Dataset Characteristics
+
+The dataset represents one of the most comprehensive records of urban gun violence available for analysis. Each row represents a single shooting incident, with the NYPD defining a shooting incident as any discharge of a firearm that results in injury or death, excluding officer-involved shootings and accidental discharges.
+
+Key data quality considerations include:
+- **Temporal coverage**: The dataset spans nearly two decades, providing sufficient data for trend analysis
+- **Completeness**: Victim information is generally complete, while perpetrator information has significant missing data
+- **Geographic precision**: Location data includes both coordinate information and administrative boundaries
+
+```{r data-cleaning}
+# Data preprocessing
+nypd_clean <- nypd_data %>%
+  # Date conversion
+  mutate(
+    OCCUR_DATE = mdy(OCCUR_DATE),
+    OCCUR_TIME = hms(OCCUR_TIME),
+    YEAR = year(OCCUR_DATE),
+    MONTH = month(OCCUR_DATE, label = TRUE),
+    HOUR = hour(OCCUR_TIME)
+  ) %>%
+  # Filter missing values
+  filter(!is.na(OCCUR_DATE))
+
+# Basic statistics
+cat("Total shooting incidents:", nrow(nypd_clean), "\n")
+cat("Murder cases:", sum(nypd_clean$STATISTICAL_MURDER_FLAG == "TRUE", na.rm = TRUE), "\n")
+cat("Analysis period:", min(nypd_clean$OCCUR_DATE), "~", max(nypd_clean$OCCUR_DATE), "\n")
+```
+
+The analysis reveals **`r format(nrow(nypd_clean), big.mark=",")`** shooting incidents over the study period, with **`r format(sum(nypd_clean$STATISTICAL_MURDER_FLAG == "TRUE", na.rm = TRUE), big.mark=",")`** resulting in death (**`r round(mean(nypd_clean$STATISTICAL_MURDER_FLAG == "TRUE", na.rm = TRUE) * 100, 1)`%** fatality rate). This relatively low fatality rate compared to total incidents suggests that many shootings result in non-fatal injuries, highlighting the broader impact of gun violence beyond homicides alone.
+
+# Temporal and Spatial Analysis
+
+## Temporal Patterns: The Late-Night Crisis
+
+Understanding when shootings occur provides crucial insights for resource allocation and prevention strategies. The temporal distribution reveals stark patterns that align with existing criminological theory about routine activities and social disorganization.
+
+```{r hourly-pattern}
+hourly_data <- nypd_clean %>%
+  group_by(HOUR) %>%
+  summarise(incident_count = n(), .groups = 'drop')
+
+p1 <- ggplot(hourly_data, aes(x = HOUR, y = incident_count)) +
+  geom_line(color = "darkred", size = 1.2) +
+  geom_point(color = "red", size = 2) +
+  scale_x_continuous(breaks = seq(0, 23, 2)) +
+  labs(title = "Hourly Pattern of Shooting Incidents",
+       x = "Hour (24-hour format)", y = "Number of Incidents") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, size = 14))
+
+print(p1)
+```
+
+**Key Findings:**
+
+The hourly distribution reveals a dramatic **late-night peak** with several important implications:
+
+- **Peak hours**: Shooting incidents reach their maximum between 10 PM and 2 AM, with **`r hourly_data[hourly_data$HOUR == 23, "incident_count"]`** incidents occurring at 11 PM alone
+- **Daytime safety**: The period from 6 AM to 6 PM shows consistently lower incident rates, suggesting relative safety during business hours
+- **Weekend effect**: This pattern likely intensifies on weekends when nightlife activity peaks (though day-of-week analysis would confirm this)
+
+This pattern aligns with routine activity theory - shootings increase when guardianship is low (fewer police, less foot traffic) and when high-risk social activities (nightlife, parties) bring motivated offenders and suitable targets together. The implications for policing strategy are clear: enhanced late-night patrols and community interventions during peak hours could significantly impact overall gun violence.
+
+## Geographic and Demographic Disparities
+
+```{r boro-race-analysis}
+# Borough + Victim Race Analysis
+boro_race_data <- nypd_clean %>%
+  filter(!is.na(VIC_RACE) & VIC_RACE != "UNKNOWN") %>%
+  group_by(BORO, VIC_RACE) %>%
+  summarise(incident_count = n(), .groups = 'drop') %>%
+  group_by(BORO) %>%
+  mutate(percentage = incident_count / sum(incident_count) * 100) %>%
+  ungroup()
+
+p2 <- ggplot(boro_race_data, aes(x = BORO, y = incident_count, fill = VIC_RACE)) +
+  geom_col(position = "stack") +
+  labs(title = "Distribution of Victim Race by Borough",
+       x = "Borough", y = "Number of Incidents", fill = "Victim Race") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p2)
+```
+
+**Critical Analysis:**
+
+This visualization reveals profound **geographic and racial disparities** that reflect decades of structural inequality:
+
+- **Brooklyn dominates**: With **`r sum(boro_race_data[boro_race_data$BORO == "BROOKLYN", "incident_count"])`** incidents, Brooklyn accounts for the plurality of all shootings, despite being only one of five boroughs
+- **Racial concentration**: The data shows disproportionate victimization among Black and Hispanic communities across all boroughs
+- **Manhattan contrast**: Despite being the economic center, Manhattan shows relatively lower incident counts, highlighting how gun violence concentrates in specific neighborhoods
+
+**Important Context**: These patterns cannot be interpreted without acknowledging their roots in historical segregation, economic disinvestment, and discriminatory criminal justice practices. The concentration of shootings in certain communities reflects broader patterns of inequality rather than inherent characteristics of these populations.
+
+The geographic clustering also suggests that targeted, community-based interventions in high-incident areas could have substantial impact on overall gun violence rates.
+
+# Predictive Modeling: Understanding Fatal Outcomes
+
+## Model Development and Rationale
+
+To understand what factors distinguish fatal from non-fatal shooting incidents, we develop a logistic regression model. This approach allows us to quantify the relationship between incident characteristics and lethal outcomes while maintaining interpretability - crucial for policy applications.
+
+The model predicts the probability that a shooting incident will result in death based on available incident characteristics. While this analysis serves research purposes, we acknowledge the serious ethical considerations around predictive policing applications.
+
+```{r logistic-model}
+# Prepare data for modeling
+model_data <- nypd_clean %>%
+  filter(!is.na(VIC_AGE_GROUP) & !is.na(VIC_SEX) & !is.na(VIC_RACE) &
+         !is.na(BORO) & VIC_AGE_GROUP != "UNKNOWN" & 
+         VIC_SEX %in% c("M", "F")) %>%
+  mutate(
+    MURDER = as.factor(ifelse(STATISTICAL_MURDER_FLAG == "TRUE", 1, 0)),
+    VIC_AGE_GROUP = as.factor(VIC_AGE_GROUP),
+    VIC_SEX = as.factor(VIC_SEX),
+    VIC_RACE = as.factor(VIC_RACE),
+    BORO = as.factor(BORO),
+    HOUR_GROUP = as.factor(case_when(
+      HOUR >= 6 & HOUR < 12 ~ "Morning",
+      HOUR >= 12 & HOUR < 18 ~ "Afternoon", 
+      HOUR >= 18 & HOUR < 24 ~ "Evening",
+      TRUE ~ "Night"
+    ))
+  ) %>%
+  select(MURDER, BORO, VIC_AGE_GROUP, VIC_SEX, VIC_RACE, HOUR_GROUP)
+
+cat("Model training data:", nrow(model_data), "incidents\n")
+cat("Fatal outcome rate:", round(mean(model_data$MURDER == "1") * 100, 1), "%\n")
+
+# Train logistic regression model
+logistic_model <- glm(MURDER ~ ., data = model_data, family = binomial)
+
+# Model summary
+summary(logistic_model)
+```
+
+## Model Results and Interpretation
+
+```{r model-coefficients}
+# Coefficient interpretation table
+coef_table <- broom::tidy(logistic_model) %>%
+  mutate(
+    odds_ratio = exp(estimate),
+    conf_low = exp(estimate - 1.96 * std.error),
+    conf_high = exp(estimate + 1.96 * std.error)
+  ) %>%
+  select(term, estimate, odds_ratio, conf_low, conf_high, p.value) %>%
+  arrange(desc(abs(estimate)))
+
+DT::datatable(coef_table, 
+              caption = "Logistic Regression Coefficients and Odds Ratios",
+              options = list(pageLength = 15)) %>%
+  DT::formatRound(columns = c("estimate", "odds_ratio", "conf_low", "conf_high"), digits = 3) %>%
+  DT::formatRound(columns = "p.value", digits = 4)
+```
+
+**Key Model Insights:**
+
+The logistic regression reveals several statistically significant predictors of fatal outcomes:
+
+**Age Effects**: Older victims show higher fatality rates, potentially reflecting:
+- Reduced resilience to traumatic injury
+- Delayed emergency response in some cases
+- Different types of conflicts (domestic vs. street violence)
+
+**Geographic Variations**: Borough-level differences in fatality rates may reflect:
+- Proximity to trauma centers and emergency services
+- Types of firearms commonly used
+- Different conflict contexts across neighborhoods
+
+**Temporal Patterns**: Time-of-day effects suggest:
+- Delayed emergency response during late hours
+- Different types of incidents (planned vs. spontaneous)
+- Varying intensity of conflicts throughout the day
+
+**Critical Interpretation Note**: While these statistical associations are significant, they must be interpreted cautiously. Correlation does not imply causation, and these patterns reflect complex social, economic, and institutional factors rather than individual characteristics that determine outcomes.
+
+# Critical Assessment: Bias and Limitations
+
+## Understanding Data Biases in Police Records
+
+Police data, while valuable for analysis, is fundamentally shaped by law enforcement practices and social inequalities. Recognizing these biases is essential for responsible interpretation and policy application.
+
+```{r bias-analysis}
+cat("=== Identified Major Biases ===\n\n")
+
+# 1. Reporting Bias
+cat("1. Reporting Bias:\n")
+cat("- Not all shooting incidents are reported to police\n")
+cat("- Potential differences in reporting rates by area and race\n\n")
+
+# 2. Collection Bias  
+missing_data <- nypd_clean %>%
+  summarise(
+    perp_age_missing = mean(is.na(PERP_AGE_GROUP) | PERP_AGE_GROUP == "UNKNOWN") * 100,
+    perp_sex_missing = mean(is.na(PERP_SEX) | PERP_SEX == "U") * 100,
+    perp_race_missing = mean(is.na(PERP_RACE) | PERP_RACE == "UNKNOWN") * 100
+  )
+
+cat("2. Collection Bias:\n")
+cat("- Very high missing rate for perpetrator information\n")
+cat("  * Age:", round(missing_data$perp_age_missing, 1), "%\n")
+cat("  * Sex:", round(missing_data$perp_sex_missing, 1), "%\n") 
+cat("  * Race:", round(missing_data$perp_race_missing, 1), "%\n\n")
+
+# 3. Historical Bias
+cat("3. Historical Bias:\n")
+cat("- Past discriminatory policies and practices affect current data patterns\n")
+cat("- Systemic inequalities reflected in incident locations and victim characteristics\n\n")
+
+# 4. Model Bias Risk
+cat("4. Model Bias Risks:\n")
+cat("- Potential for discriminatory predictions when using race and location data\n")
+cat("- Risk of learning and reproducing existing inequality patterns\n")
+```
+
+**Detailed Bias Analysis:**
+
+**Reporting Bias** represents perhaps the most fundamental limitation. Community mistrust of police, fear of retaliation, and cultural factors create differential reporting rates. Communities with strained police relations may underreport incidents, while areas with stronger police presence may show inflated incident rates due to increased surveillance.
+
+**Collection Bias** is evident in the shocking **`r round(missing_data$perp_age_missing, 0)`%** missing rate for perpetrator information. This isn't random - it reflects the reality that many shootings remain unsolved, and solved cases may be systematically different from unsolved ones. This missing data problem severely limits our ability to understand perpetrator characteristics and could bias any predictive models.
+
+**Historical Bias** means our data reflects decades of discriminatory policing practices. Areas that were historically over-policed will show higher incident rates not necessarily because they're more dangerous, but because they're more surveilled. This creates a feedback loop where data justifies continued over-policing.
+
+**Algorithmic Bias** risks emerge when models trained on biased historical data are used for prediction. A model that learns from historically discriminatory patterns will reproduce and potentially amplify those biases in its predictions.
+
+## Inequality Analysis by Demographics
+
+```{r inequality-analysis}
+# Racial victimization analysis
+race_inequality <- nypd_clean %>%
+  filter(!is.na(VIC_RACE) & VIC_RACE != "UNKNOWN") %>%
+  group_by(VIC_RACE) %>%
+  summarise(
+    total_incidents = n(),
+    murder_incidents = sum(STATISTICAL_MURDER_FLAG == "TRUE", na.rm = TRUE),
+    murder_rate = round(mean(STATISTICAL_MURDER_FLAG == "TRUE", na.rm = TRUE) * 100, 2),
+    percentage_of_total = round(n() / nrow(nypd_clean) * 100, 2),
+    .groups = 'drop'
+  ) %>%
+  arrange(desc(total_incidents))
+
+DT::datatable(race_inequality, 
+              caption = "Shooting Incident Victimization by Race - Inequality Analysis")
+
+# Borough disparity analysis  
+boro_inequality <- nypd_clean %>%
+  group_by(BORO) %>%
+  summarise(
+    total_incidents = n(),
+    murder_rate = round(mean(STATISTICAL_MURDER_FLAG == "TRUE", na.rm = TRUE) * 100, 2),
+    .groups = 'drop'
+  ) %>%
+  mutate(relative_to_average = round(murder_rate / mean(murder_rate), 2)) %>%
+  arrange(desc(total_incidents))
+
+DT::datatable(boro_inequality,
+              caption = "Shooting Incidents by Borough - Geographic Disparity Analysis")
+```
+
+**Interpreting Disparities:**
+
+The demographic analysis reveals profound inequalities that demand careful interpretation. The disproportionate impact on certain racial groups cannot be understood without considering:
+
+- **Structural factors**: Historical segregation, economic disinvestment, and limited opportunities in affected communities
+- **Policy consequences**: How drug policies, housing policies, and policing strategies have concentrated disadvantage
+- **Social determinants**: The relationship between poverty, education, healthcare access, and violence
+
+These patterns represent failures of social policy rather than inherent characteristics of communities. Effective violence prevention requires addressing root causes rather than simply increasing enforcement.
+
+# Conclusions and Policy Implications
+
+## Key Findings
+
+Our analysis reveals several critical patterns in New York City shooting incidents:
+
+1. **Temporal Concentration**: The dramatic late-night peak (**10 PM - 2 AM**) suggests that targeted interventions during these hours could have disproportionate impact on overall gun violence.
+
+2. **Geographic Clustering**: The concentration of incidents in specific boroughs and neighborhoods indicates that place-based strategies focusing on high-incident areas could be effective.
+
+3. **Demographic Disparities**: The disproportionate impact on certain communities reflects broader patterns of structural inequality that must be addressed through comprehensive social policy.
+
+4. **Predictive Factors**: Our model identifies several factors associated with fatal outcomes, though these relationships reflect complex social processes rather than simple causal mechanisms.
+
+## Policy Recommendations
+
+**Evidence-Based Prevention:**
+- Deploy additional resources during peak risk hours (late night/early morning)
+- Implement community-based violence interruption programs in high-incident areas
+- Expand trauma care and emergency response capacity in affected neighborhoods
+
+**Addressing Root Causes:**
+- Invest in education, economic development, and social services in high-incident communities
+- Reform policies that contribute to concentrated disadvantage
+- Support community-led violence prevention initiatives
+
+**Data and Research:**
+- Improve data collection practices to reduce bias and missing information
+- Conduct regular bias audits of predictive models and policing algorithms
+- Invest in research on community-based violence prevention strategies
+
+## Limitations and Ethical Considerations
+
+**Major Limitations:**
+- **Reporting Bias**: Underestimation due to unreported incidents
+- **Collection Bias**: Systematic missing data for perpetrator information (50%+ missing)
+- **Historical Bias**: Past discriminatory policies reflected in current patterns
+- **Algorithmic Bias**: Risk of models learning and reproducing existing inequalities
+
+**Ethical Framework for Use:**
+
+This analysis should be used exclusively for **prevention and public health purposes**. It is **absolutely prohibited** for:
+- Individual or group discrimination
+- Justifying discriminatory enforcement practices
+- Profiling or targeting specific communities
+
+Any policies developed from this analysis must prioritize **fairness, community well-being, and human rights**. The goal should be reducing violence and harm for all communities, not increasing surveillance or punishment for already marginalized populations.
+
+**Future Research:**
+
+Further research should focus on:
+- Community-based violence prevention strategies
+- The effectiveness of social interventions versus enforcement approaches
+- Long-term solutions that address structural inequalities
+- Methods for reducing bias in crime data and analysis
+
+---
+
+**Important Notice**: This data and analysis contain inherent structural biases requiring careful interpretation and application. Any policies or measures must be grounded in fairness, community engagement, and human rights principles. The ultimate goal must be safer, more equitable communities for all New Yorkers.
